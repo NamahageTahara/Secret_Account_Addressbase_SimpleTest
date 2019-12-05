@@ -1,0 +1,1 @@
+{"rustc":17918105849330741935,"features":"[]","target":12698452665047578034,"profile":9935990280773120926,"path":7998331553861137673,"deps":[[16968921264460901151,"serde",false,1833656210972464655]],"local":[{"CheckDepInfo":{"dep_info":"debug/.fingerprint/toml-db1936eb1cb84081/dep-lib-toml-db1936eb1cb84081"}}],"rustflags":[],"metadata":15823223228428447826}

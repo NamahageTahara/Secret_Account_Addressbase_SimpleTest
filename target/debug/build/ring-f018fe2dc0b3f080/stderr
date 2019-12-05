@@ -1,0 +1,4 @@
+crypto/cpu-intel.c:63:9: warning: Don't have SGX [-W#pragma-messages]
+#pragma message "Don't have SGX"
+        ^
+1 warning generated.

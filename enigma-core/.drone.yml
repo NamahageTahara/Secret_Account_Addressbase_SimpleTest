@@ -1,0 +1,170 @@
+kind: pipeline
+name: default
+steps:
+  - name: ganache
+    image: trufflesuite/ganache-cli:v6.4.3
+    detach: true
+
+  - name: core
+    image: enigmampc/enigma-core:0.0.10
+    privileged: true
+    depends_on: [clone]
+    commands:
+      - LD_LIBRARY_PATH=/opt/intel/libsgx-enclave-common/aesm /opt/intel/libsgx-enclave-common/aesm/aesm_service
+      - . /opt/sgxsdk/environment && . /root/.cargo/env
+      - cargo --version
+      - cd enigma-core && RUSTFLAGS=-Awarnings make DEBUG=1
+      - cd app && RUSTFLAGS=-Awarnings cargo test
+    volumes:
+      - name: isgx
+        path: /dev/isgx
+
+  - name: principal
+    image: enigmampc/enigma-core:0.0.10
+    privileged: true
+    depends_on: [clone]
+    commands:
+      - LD_LIBRARY_PATH=/opt/intel/libsgx-enclave-common/aesm /opt/intel/libsgx-enclave-common/aesm/aesm_service
+      - . /opt/sgxsdk/environment && . /root/.cargo/env
+      - cd enigma-principal && RUSTFLAGS=-Awarnings make DEBUG=1
+      - export NODE_URL="http://ganache:8545"
+      - cd app && RUSTFLAGS=-Awarnings cargo test
+    volumes:
+      - name: isgx
+        path: /dev/isgx
+
+  - name: tools_u
+    image: enigmampc/enigma-core:0.0.10
+    depends_on: [clone]
+    commands:
+      - . /root/.cargo/env
+      - export NODE_URL="http://ganache:8545"
+      - cd enigma-tools-u
+      - RUSTFLAGS=-Awarnings cargo test
+
+  - name: enigma_crypto
+    image: enigmampc/enigma-core:0.0.10
+    depends_on: [clone]
+    commands:
+      - LD_LIBRARY_PATH=/opt/intel/libsgx-enclave-common/aesm /opt/intel/libsgx-enclave-common/aesm/aesm_service
+      - . /opt/sgxsdk/environment && . /root/.cargo/env
+      - cd enigma-crypto
+      - RUSTFLAGS=-Awarnings cargo test
+      - RUSTFLAGS=-Awarnings cargo build --no-default-features --features=sgx
+
+  - name: tools_m
+    image: enigmampc/enigma-core:0.0.10
+    depends_on: [clone]
+    commands:
+      - LD_LIBRARY_PATH=/opt/intel/libsgx-enclave-common/aesm /opt/intel/libsgx-enclave-common/aesm/aesm_service
+      - . /opt/sgxsdk/environment && . /root/.cargo/env
+      - cd enigma-tools-m
+      - RUSTFLAGS=-Awarnings cargo test
+      - RUSTFLAGS=-Awarnings cargo check --no-default-features --features=sgx
+
+  - name: eng_wasm
+    image: enigmampc/enigma-core:0.0.10
+    depends_on: [clone]
+    commands:
+      - . /root/.cargo/env
+      - cd eng-wasm/derive
+      - cargo test
+
+  - name: enigma_types
+    image: enigmampc/enigma-core:0.0.10
+    depends_on: [clone]
+    commands:
+      - LD_LIBRARY_PATH=/opt/intel/libsgx-enclave-common/aesm /opt/intel/libsgx-enclave-common/aesm/aesm_service
+      - . /opt/sgxsdk/environment && . /root/.cargo/env
+      - cd enigma-types
+      - RUSTFLAGS=-Awarnings cargo test
+      - RUSTFLAGS=-Awarnings cargo check
+      - RUSTFLAGS=-Awarnings cargo check --features=std
+      - RUSTFLAGS=-Awarnings cargo check --features=sgx
+      - RUSTFLAGS=-Awarnings cargo check --features=alloc
+
+  - name: integration
+    image: enigmampc/docker-client
+    privileged: true
+    depends_on:
+      - core
+      - principal
+    volumes:
+      - name: sock
+        path: /var/run/docker.sock
+    commands:
+      - git clone https://github.com/enigmampc/discovery-docker-network.git
+      - cd discovery-docker-network && cp .env-template .env
+      - sed -i "s/COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=enigma_${DRONE_BUILD_NUMBER}/" .env
+      - export MATCHING_BRANCH_P2P="$(git ls-remote --heads https://github.com/enigmampc/enigma-p2p.git ${DRONE_BRANCH} | wc -l)"
+      - export MATCHING_BRANCH_CONTRACT="$(git ls-remote --heads https://github.com/enigmampc/enigma-contract.git ${DRONE_BRANCH} | wc -l)"
+      - export DOCKER_TAG=core_${DRONE_BUILD_NUMBER}
+      - sed -i "s/DOCKER_TAG=latest/DOCKER_TAG=${DOCKER_TAG}/" .env;
+      - |
+        /bin/bash -c '
+        declare -a PROJECTS=(p2p contract)
+        declare -A DOCKER_IMAGES=([p2p]=enigma_p2p [contract]=enigma_contract)
+        declare -A GIT_BRANCH_ARG=([p2p]=GIT_BRANCH_P2P [contract]=GIT_BRANCH_CONTRACT)
+        declare -A PROJECT_DIRECTORY=([p2p]=enigma-p2p [contract]=enigma-contract)
+        declare -A PROJECT_BRANCH_FOUND=([p2p]=$MATCHING_BRANCH_P2P [contract]=$MATCHING_BRANCH_CONTRACT)
+        for project in $${PROJECTS[@]}; do
+          DOCKER_IMAGE="enigmampc/$${DOCKER_IMAGES[$project]}"
+          if [[ "$DRONE_BRANCH" == "master" ]]; then
+            docker pull "$DOCKER_IMAGE:latest"
+            docker tag "$DOCKER_IMAGE:latest" "$DOCKER_IMAGE:$DOCKER_TAG"
+          elif [ "$${PROJECT_BRANCH_FOUND[$project]}" -eq 0 ]; then
+            docker pull "$DOCKER_IMAGE:develop"
+            docker tag "$DOCKER_IMAGE:develop" "$DOCKER_IMAGE:$DOCKER_TAG"
+          else
+            cd "$${PROJECT_DIRECTORY[$project]}"
+            docker build --build-arg "$${GIT_BRANCH_ARG[$project]}=${DRONE_BRANCH}" -t "$DOCKER_IMAGE:$DOCKER_TAG" --no-cache .
+            cd ..
+          fi
+        done'
+      - |
+        cd enigma-core &&
+        docker build --build-arg GIT_BRANCH_CORE=$DRONE_BRANCH --build-arg SGX_MODE=HW -t enigmampc/enigma_core_hw:$DOCKER_TAG --no-cache . &&
+        docker build -f Dockerfile.km --build-arg GIT_BRANCH_CORE=$DRONE_BRANCH --build-arg SGX_MODE=HW -t enigmampc/enigma_km_hw:$DOCKER_TAG --no-cache . &&
+        cd ..
+      - export NODES=3
+      - docker-compose -f docker-compose.yml -f docker-compose.hw.yml -f docker-compose.test.yml up --scale core=$NODES --scale p2p=$NODES --exit-code-from client && export RESULT=$? || export RESULT=$?
+      - docker-compose -f docker-compose.yml -f docker-compose.hw.yml down -v --rmi all || true
+      - if [ $RESULT -ne 0 ]; then exit 1; fi
+
+  - name: deploy
+    image: enigmampc/docker-client
+    privileged: true
+    depends_on:
+      - integration
+    when:
+      branch:
+        - develop
+        - master
+    environment:
+      USERNAME:
+        from_secret: username
+      PASSWORD:
+        from_secret: password
+    volumes:
+      - name: sock
+        path: /var/run/docker.sock
+    commands:
+      - cd discovery-docker-network/enigma-core
+      - echo $PASSWORD | docker login -u $USERNAME --password-stdin
+      - if [[ ${DRONE_BRANCH} == "master" ]]; then export DOCKER_TAG=latest; else export DOCKER_TAG=develop; fi
+      - docker build --build-arg GIT_BRANCH_CORE=$DRONE_BRANCH --build-arg SGX_MODE=HW -t enigmampc/enigma_core_hw:$DOCKER_TAG --no-cache .
+      - docker push enigmampc/enigma_core_hw:$DOCKER_TAG
+      - docker build -f Dockerfile.km --build-arg GIT_BRANCH_CORE=$DRONE_BRANCH --build-arg SGX_MODE=HW -t enigmampc/enigma_km_hw:$DOCKER_TAG --no-cache .
+      - docker push enigmampc/enigma_km_hw:$DOCKER_TAG
+      - docker build --build-arg GIT_BRANCH_CORE=$DRONE_BRANCH --build-arg SGX_MODE=SW -t enigmampc/enigma_core_sw:$DOCKER_TAG --no-cache .
+      - docker push enigmampc/enigma_core_sw:$DOCKER_TAG
+      - docker build -f Dockerfile.km --build-arg GIT_BRANCH_CORE=$DRONE_BRANCH --build-arg SGX_MODE=SW -t enigmampc/enigma_km_sw:$DOCKER_TAG --no-cache .
+      - docker push enigmampc/enigma_km_sw:$DOCKER_TAG
+
+volumes:
+  - name: isgx
+    host:
+      path: /dev/isgx
+  - name: sock
+    host:
+      path: /var/run/docker.sock

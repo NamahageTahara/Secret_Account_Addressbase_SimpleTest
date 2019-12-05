@@ -1,0 +1,2 @@
+cargo:rustc-env=TYPENUM_BUILD_OP=/Users/taharahiroki/secret_account_test/target/debug/build/typenum-4d5dc0c1f1863c94/out/consts.rs
+cargo:rustc-env=TYPENUM_BUILD_CONSTS=/Users/taharahiroki/secret_account_test/target/debug/build/typenum-4d5dc0c1f1863c94/out/op.rs
